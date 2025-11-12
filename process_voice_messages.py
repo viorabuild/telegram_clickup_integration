@@ -285,10 +285,25 @@ def extract_tasks_from_text(text, api_key):
     )
 
     # Парсим JSON ответ согласно новому SDK
-    parsed_output = getattr(response, "parsed", None)
+    tasks = None
+
+    # Новые клиенты OpenAI Responses возвращают валидированный JSON в `output_parsed`
+    parsed_output = getattr(response, "output_parsed", None)
     if parsed_output is not None:
         tasks = parsed_output
-    else:
+
+    # Если `output_parsed` отсутствует, пытаемся найти `parsed` внутри контент-блоков
+    if tasks is None:
+        for item in getattr(response, "output", []) or []:
+            for content_block in getattr(item, "content", []) or []:
+                block_parsed = getattr(content_block, "parsed", None)
+                if block_parsed is not None:
+                    tasks = block_parsed
+                    break
+            if tasks is not None:
+                break
+
+    if tasks is None:
         output_items = getattr(response, "output", []) or []
         if not output_items or not getattr(output_items[0], "content", None):
             raise ValueError("GPT не вернул текст с задачами при извлечении")
