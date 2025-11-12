@@ -389,123 +389,144 @@ def main():
         last_update_id=last_update_id
     )
 
-    if max_update_id is not None and max_update_id != last_update_id:
-        state['last_update_id'] = max_update_id
-        save_state(state)
-    
+    new_last_update_id = max_update_id
+
     print(f"Найдено голосовых сообщений: {len(voice_messages)}")
-    
+
     log_data = {
         'voice_messages': [],
         'total_tasks_created': 0,
         'total_tasks_failed': 0,
         'clickup_list_id': clickup_list_id
     }
-    
-    # Обрабатываем каждое голосовое/аудио сообщение
-    for vm in voice_messages:
-        audio_type_label = "голосового" if vm['type'] == 'voice' else "аудио"
-        forwarded_label = " (пересланное)" if vm.get('is_forwarded') else ""
-        print(f"\nОбработка {audio_type_label}{forwarded_label} от {vm['from_user']}...")
-        
-        vm_log = {
-            'from_user': vm['from_user'],
-            'date': vm['date'],
-            'duration': vm['duration'],
-            'type': vm['type'],
-            'is_forwarded': vm.get('is_forwarded', False)
-        }
-        
-        audio_path = None
-        try:
-            # Определяем расширение файла по mime_type
-            mime_type = vm.get('mime_type', 'audio/ogg')
-            if 'ogg' in mime_type:
-                suffix = '.ogg'
-            elif 'mpeg' in mime_type or 'mp3' in mime_type:
-                suffix = '.mp3'
-            elif 'mp4' in mime_type or 'm4a' in mime_type:
-                suffix = '.m4a'
-            elif 'wav' in mime_type:
-                suffix = '.wav'
-            else:
-                suffix = '.ogg'  # по умолчанию
-            
-            # Скачиваем аудио файл
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
-                audio_path = tmp_file.name
 
-            download_audio_file(bot_token, vm['file_id'], audio_path)
-            print(f"  Аудио файл скачан: {audio_path}")
-            
-            # Транскрибируем
-            transcription = transcribe_audio(audio_path, openai_api_key)
-            print(f"  Транскрипция: {transcription[:100]}...")
-            vm_log['transcription'] = transcription
-            
-            # Извлекаем задачи
-            tasks = extract_tasks_from_text(transcription, openai_api_key)
-            print(f"  Извлечено задач: {len(tasks)}")
-            vm_log['tasks'] = tasks
+    processing_successful = False
+    tasks_file: Optional[str] = None
 
-            created_for_message = 0
-            for task in tasks:
-                payload = build_clickup_payload(task, default_priority=default_priority)
-                task_name = payload.get('name', 'Без названия')
+    try:
+        # Обрабатываем каждое голосовое/аудио сообщение
+        for vm in voice_messages:
+            audio_type_label = "голосового" if vm['type'] == 'voice' else "аудио"
+            forwarded_label = " (пересланное)" if vm.get('is_forwarded') else ""
+            print(f"\nОбработка {audio_type_label}{forwarded_label} от {vm['from_user']}...")
 
-                try:
-                    response = create_clickup_task(clickup_token, clickup_list_id, payload)
-                except Exception as create_err:
-                    task['clickup_error'] = str(create_err)
-                    log_data['total_tasks_failed'] += 1
-                    vm_log['clickup_failed'] = vm_log.get('clickup_failed', 0) + 1
-                    print(f"  Ошибка создания задачи '{task_name}': {create_err}")
-                    continue
+            vm_log = {
+                'from_user': vm['from_user'],
+                'date': vm['date'],
+                'duration': vm['duration'],
+                'type': vm['type'],
+                'is_forwarded': vm.get('is_forwarded', False)
+            }
 
-                task_id = response.get("id") or response.get("task", {}).get("id")
-                if task_id:
-                    task['clickup_task_id'] = task_id
-                    created_for_message += 1
-                    log_data['total_tasks_created'] += 1
-                    print(f"  Создана задача в ClickUp: {task_id} — {task_name}")
+            audio_path = None
+            try:
+                # Определяем расширение файла по mime_type
+                mime_type = vm.get('mime_type', 'audio/ogg')
+                if 'ogg' in mime_type:
+                    suffix = '.ogg'
+                elif 'mpeg' in mime_type or 'mp3' in mime_type:
+                    suffix = '.mp3'
+                elif 'mp4' in mime_type or 'm4a' in mime_type:
+                    suffix = '.m4a'
+                elif 'wav' in mime_type:
+                    suffix = '.wav'
                 else:
-                    task['clickup_error'] = "Task created without ID in response"
-                    log_data['total_tasks_failed'] += 1
-                    vm_log['clickup_failed'] = vm_log.get('clickup_failed', 0) + 1
-                    print(f"  Задача создана без ID в ответе — {task_name}")
+                    suffix = '.ogg'  # по умолчанию
 
-            if created_for_message:
-                vm_log['clickup_created'] = created_for_message
-            
-        except Exception as e:
-            print(f"  Ошибка при обработке: {e}")
-            vm_log['error'] = str(e)
-        finally:
-            if audio_path and os.path.exists(audio_path):
-                try:
-                    os.unlink(audio_path)
-                except OSError:
-                    pass
-        
-        log_data['voice_messages'].append(vm_log)
-    
-    # Сохраняем лог
-    logs_dir = PROJECT_ROOT / "logs"
-    os.makedirs(logs_dir, exist_ok=True)
-    log_file = str(logs_dir / f"processing_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
-    save_processing_log(log_data, log_file)
-    print(f"\nЛог сохранен: {log_file}")
-    
-    # Сохраняем данные задач для следующего шага
-    tasks_file = str(PROJECT_ROOT / f"tasks_to_create_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-    with open(tasks_file, 'w', encoding='utf-8') as f:
-        json.dump(log_data, f, ensure_ascii=False, indent=2)
-    print(f"Данные задач сохранены: {tasks_file}")
-    
-    print(
-        f"\nОбработка завершена. Всего задач создано: {log_data['total_tasks_created']}, "
-        f"ошибок: {log_data['total_tasks_failed']}"
-    )
+                # Скачиваем аудио файл
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+                    audio_path = tmp_file.name
+
+                download_audio_file(bot_token, vm['file_id'], audio_path)
+                print(f"  Аудио файл скачан: {audio_path}")
+
+                # Транскрибируем
+                transcription = transcribe_audio(audio_path, openai_api_key)
+                print(f"  Транскрипция: {transcription[:100]}...")
+                vm_log['transcription'] = transcription
+
+                # Извлекаем задачи
+                tasks = extract_tasks_from_text(transcription, openai_api_key)
+                print(f"  Извлечено задач: {len(tasks)}")
+                vm_log['tasks'] = tasks
+
+                created_for_message = 0
+                for task in tasks:
+                    payload = build_clickup_payload(task, default_priority=default_priority)
+                    task_name = payload.get('name', 'Без названия')
+
+                    try:
+                        response = create_clickup_task(clickup_token, clickup_list_id, payload)
+                    except Exception as create_err:
+                        task['clickup_error'] = str(create_err)
+                        log_data['total_tasks_failed'] += 1
+                        vm_log['clickup_failed'] = vm_log.get('clickup_failed', 0) + 1
+                        print(f"  Ошибка создания задачи '{task_name}': {create_err}")
+                        continue
+
+                    task_id = response.get("id") or response.get("task", {}).get("id")
+                    if task_id:
+                        task['clickup_task_id'] = task_id
+                        created_for_message += 1
+                        log_data['total_tasks_created'] += 1
+                        print(f"  Создана задача в ClickUp: {task_id} — {task_name}")
+                    else:
+                        task['clickup_error'] = "Task created without ID in response"
+                        log_data['total_tasks_failed'] += 1
+                        vm_log['clickup_failed'] = vm_log.get('clickup_failed', 0) + 1
+                        print(f"  Задача создана без ID в ответе — {task_name}")
+
+                if created_for_message:
+                    vm_log['clickup_created'] = created_for_message
+
+            except Exception as e:
+                print(f"  Ошибка при обработке: {e}")
+                vm_log['error'] = str(e)
+            finally:
+                if audio_path and os.path.exists(audio_path):
+                    try:
+                        os.unlink(audio_path)
+                    except OSError:
+                        pass
+
+            log_data['voice_messages'].append(vm_log)
+
+        # Сохраняем лог
+        logs_dir = PROJECT_ROOT / "logs"
+        os.makedirs(logs_dir, exist_ok=True)
+        log_file = str(logs_dir / f"processing_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
+        save_processing_log(log_data, log_file)
+        print(f"\nЛог сохранен: {log_file}")
+
+        # Сохраняем данные задач для следующего шага
+        tasks_file = str(PROJECT_ROOT / f"tasks_to_create_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        with open(tasks_file, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, ensure_ascii=False, indent=2)
+        print(f"Данные задач сохранены: {tasks_file}")
+
+        print(
+            f"\nОбработка завершена. Всего задач создано: {log_data['total_tasks_created']}, "
+            f"ошибок: {log_data['total_tasks_failed']}"
+        )
+
+        processing_successful = True
+    finally:
+        if (
+            processing_successful
+            and new_last_update_id is not None
+            and new_last_update_id != last_update_id
+        ):
+            state['last_update_id'] = new_last_update_id
+            save_state(state)
+        elif (
+            not processing_successful
+            and new_last_update_id is not None
+            and new_last_update_id != last_update_id
+        ):
+            print(
+                "Состояние не обновлено из-за ошибки. Новые обновления будут повторно обработаны при следующем запуске."
+            )
+
     return tasks_file
 
 if __name__ == "__main__":
