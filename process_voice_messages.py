@@ -10,7 +10,9 @@ from requests.exceptions import RequestException
 from datetime import datetime, timedelta
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+
+from openai import OpenAI
 
 from clickup_client import build_clickup_payload, create_clickup_task
 
@@ -216,33 +218,54 @@ def download_audio_file(bot_token, file_id, output_path):
 
     return output_path
 
-def transcribe_audio(audio_path, api_key):
+def transcribe_audio(client: OpenAI, audio_path: str) -> str:
     """
     Транскрибирует аудио файл через OpenAI Whisper API
     Возвращает текст транскрипции
     """
-    from openai import OpenAI
-    
-    client = OpenAI(api_key=api_key)
-    
     with open(audio_path, 'rb') as audio_file:
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             language="ru"
         )
-    
+
     return transcript.text
 
-def extract_tasks_from_text(text, api_key):
+T = TypeVar("T")
+
+
+def execute_with_openai_retry(
+    client: OpenAI,
+    api_key: str,
+    func: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> Tuple[T, OpenAI]:
+    """Выполняет вызов OpenAI с переинициализацией клиента при первом сбое."""
+
+    try:
+        result = func(client, *args, **kwargs)
+        return result, client
+    except Exception as err:
+        print(
+            "  Ошибка при обращении к OpenAI:"
+            f" {err}. Повторная инициализация клиента и повтор запроса..."
+        )
+        new_client = OpenAI(api_key=api_key)
+        try:
+            result = func(new_client, *args, **kwargs)
+        except Exception:
+            # Если повторный вызов также провалился, пробрасываем исключение дальше
+            raise
+        return result, new_client
+
+
+def extract_tasks_from_text(client: OpenAI, text: str) -> List[Dict[str, Any]]:
     """
     Использует GPT для извлечения задач из транскрипции
     Возвращает список задач с полями: название, описание, дедлайн, приоритет, ответственный
     """
-    from openai import OpenAI
-    
-    client = OpenAI(api_key=api_key)
-    
     prompt = f"""
 Проанализируй следующий текст из голосового сообщения и извлеки все упомянутые задачи.
 Для каждой задачи определи:
@@ -417,7 +440,9 @@ def main():
     default_priority = config.get('default_priority', 3)
     
     print(f"Проверка голосовых сообщений в чате {chat_id}...")
-    
+
+    openai_client = OpenAI(api_key=openai_api_key)
+
     # Получаем голосовые сообщения за последний час
     state = load_state()
     last_update_id = state.get('last_update_id')
@@ -479,12 +504,22 @@ def main():
             print(f"  Аудио файл скачан: {audio_path}")
             
             # Транскрибируем
-            transcription = transcribe_audio(audio_path, openai_api_key)
+            transcription, openai_client = execute_with_openai_retry(
+                openai_client,
+                openai_api_key,
+                transcribe_audio,
+                audio_path,
+            )
             print(f"  Транскрипция: {transcription[:100]}...")
             vm_log['transcription'] = transcription
-            
+
             # Извлекаем задачи
-            tasks = extract_tasks_from_text(transcription, openai_api_key)
+            tasks, openai_client = execute_with_openai_retry(
+                openai_client,
+                openai_api_key,
+                extract_tasks_from_text,
+                transcription,
+            )
             print(f"  Извлечено задач: {len(tasks)}")
             vm_log['tasks'] = tasks
 
