@@ -4,7 +4,7 @@
 
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -15,7 +15,11 @@ def to_epoch_millis(date_str: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def build_clickup_payload(task: Dict[str, Any], default_priority: int = 3) -> Dict[str, Any]:
+def build_clickup_payload(
+    task: Dict[str, Any],
+    default_priority: int = 3,
+    assignees_map: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Подготавливает полезную нагрузку для API ClickUp из словаря задачи.
     Некорректные значения дедлайна и приоритета игнорируются.
@@ -48,6 +52,12 @@ def build_clickup_payload(task: Dict[str, Any], default_priority: int = 3) -> Di
         except ValueError:
             # Игнорируем некорректный формат дедлайна
             pass
+
+    assignee_name = task.get("assignee")
+    if assignee_name and isinstance(assignee_name, str) and assignees_map:
+        assignee_id = assignees_map.get(assignee_name)
+        if assignee_id:
+            payload["assignees"] = [assignee_id]
 
     return payload
 

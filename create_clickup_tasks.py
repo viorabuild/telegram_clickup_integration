@@ -15,6 +15,13 @@ from clickup_client import build_clickup_payload, create_clickup_task
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+def load_config() -> dict:
+    """Загружает конфигурацию проекта."""
+    config_path = PROJECT_ROOT / "config.json"
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def find_latest_tasks_file() -> Path:
     """Находит последний файл tasks_to_create_*.json в корне проекта."""
     pattern = str(PROJECT_ROOT / "tasks_to_create_*.json")
@@ -33,6 +40,11 @@ def main():
     if not clickup_token:
         raise RuntimeError("Не установлен CLICKUP_TOKEN")
 
+    config = load_config()
+    default_priority = config.get("default_priority", 3)
+    assignees_map_raw = config.get("assignees", {})
+    assignees_map = assignees_map_raw if isinstance(assignees_map_raw, dict) else {}
+
     with open(tasks_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -46,10 +58,19 @@ def main():
     for vm in data.get("voice_messages", []):
         tasks = vm.get("tasks", [])
         for task in tasks:
-            payload = build_clickup_payload(task)
-            name = payload.get("name") or "Без названия"
+            assignee_name = task.get("assignee")
+            if assignee_name and isinstance(assignee_name, str):
+                if not assignees_map.get(assignee_name):
+                    print(
+                        f"Предупреждение: для исполнителя '{assignee_name}' не найден ClickUp ID в конфигурации"
+                    )
 
-            # Примечание: сопоставления исполнителя по имени нет — пропускаем assignees
+            payload = build_clickup_payload(
+                task,
+                default_priority=default_priority,
+                assignees_map=assignees_map,
+            )
+            name = payload.get("name") or "Без названия"
 
             try:
                 resp_json = create_clickup_task(clickup_token, list_id, payload)
