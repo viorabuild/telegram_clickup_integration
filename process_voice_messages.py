@@ -317,7 +317,11 @@ def save_processing_log(log_data, log_file):
             
             if 'transcription' in vm:
                 f.write(f"**Транскрипция:**\n```\n{vm['transcription']}\n```\n\n")
-            
+
+            if vm.get('assignee_lookup_missed'):
+                missed = ', '.join(sorted(set(vm['assignee_lookup_missed'])))
+                f.write(f"**⚠️ Не найдены ClickUp ID для:** {missed}\n\n")
+
             if 'error' in vm:
                 f.write(f"**⚠️ Ошибка:** {vm['error']}\n\n")
             elif 'tasks' in vm and vm['tasks']:
@@ -375,6 +379,8 @@ def main():
         raise Exception("В config.json отсутствует clickup_list_id")
 
     default_priority = config.get('default_priority', 3)
+    assignees_map_raw = config.get('assignees', {})
+    assignees_map = assignees_map_raw if isinstance(assignees_map_raw, dict) else {}
     
     print(f"Проверка голосовых сообщений в чате {chat_id}...")
     
@@ -450,7 +456,20 @@ def main():
 
             created_for_message = 0
             for task in tasks:
-                payload = build_clickup_payload(task, default_priority=default_priority)
+                assignee_name = task.get('assignee')
+                if assignee_name and isinstance(assignee_name, str):
+                    if not assignees_map.get(assignee_name):
+                        warning_msg = (
+                            f"  Предупреждение: для исполнителя '{assignee_name}' не найден ClickUp ID в конфигурации"
+                        )
+                        print(warning_msg)
+                        vm_log.setdefault('assignee_lookup_missed', []).append(assignee_name)
+
+                payload = build_clickup_payload(
+                    task,
+                    default_priority=default_priority,
+                    assignees_map=assignees_map,
+                )
                 task_name = payload.get('name', 'Без названия')
 
                 try:

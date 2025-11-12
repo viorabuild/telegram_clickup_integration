@@ -1,5 +1,8 @@
 {
   "clickup_list_id": "901515871754",
   "telegram_check_hours": 1,
-  "default_priority": 3
+  "default_priority": 3,
+  "assignees": {
+    "Имя из транскрипции": "clickup_user_id"
+  }
 }
